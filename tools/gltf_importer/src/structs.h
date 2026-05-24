@@ -299,7 +299,7 @@ namespace T3DM
 
   constexpr int MAX_VERTEX_COUNT = 70;
   constexpr int CACHE_VERTEX_SIZE = 36;
-  constexpr u8 T3DM_VERSION = 0x05;
+  constexpr u8 T3DM_VERSION = 0x06;
 
   void writeT3DM(
     const Config &config,

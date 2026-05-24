@@ -299,6 +299,54 @@ inline static void t3d_mat4_translate(T3DMat4 *mat, float offsetX, float offsetY
 }
 
 /**
+ * Inverts an AFFINE 4x4 matrix (bottom row assumed [0,0,0,1] — no projection).
+ * Inverts the 3x3 upper-left via cofactors / determinant, then flips
+ * translation by -M3^-1 * t. Layout is column-major (m[COL][ROW]).
+ *
+ * Intended for bind-pose bone matrices in skinning, where the transform is
+ * always Scale * Rotation * Translation (no projection or shear that would
+ * disturb the affine assumption). Not safe for projection/orthographic
+ * matrices — use a general 4x4 invert for those.
+ *
+ * @param out result (may alias in)
+ * @param in input affine matrix
+ */
+inline static void t3d_mat4_invert_affine(T3DMat4 *out, const T3DMat4 *in)
+{
+  // 3x3 upper-left in row-major math notation: M3 = [[a,b,c],[d,e,f],[g,h,i]]
+  // Map from column-major C storage: m[col][row] = M3[row+1][col+1].
+  float a = in->m[0][0], b = in->m[1][0], c = in->m[2][0];
+  float d = in->m[0][1], e = in->m[1][1], f = in->m[2][1];
+  float g = in->m[0][2], h = in->m[1][2], i = in->m[2][2];
+
+  float det = a * (e*i - f*h) - b * (d*i - f*g) + c * (d*h - e*g);
+  float invDet = 1.0f / det;
+
+  // M3^-1 = adjugate(M3) / det. Store in column-major: out->m[col][row] = inv[row+1][col+1].
+  float o00 =  (e*i - f*h) * invDet;
+  float o01 = -(d*i - f*g) * invDet;
+  float o02 =  (d*h - e*g) * invDet;
+  float o10 = -(b*i - c*h) * invDet;
+  float o11 =  (a*i - c*g) * invDet;
+  float o12 = -(a*h - b*g) * invDet;
+  float o20 =  (b*f - c*e) * invDet;
+  float o21 = -(a*f - c*d) * invDet;
+  float o22 =  (a*e - b*d) * invDet;
+
+  float tx = in->m[3][0], ty = in->m[3][1], tz = in->m[3][2];
+
+  out->m[0][0] = o00; out->m[0][1] = o01; out->m[0][2] = o02; out->m[0][3] = 0.0f;
+  out->m[1][0] = o10; out->m[1][1] = o11; out->m[1][2] = o12; out->m[1][3] = 0.0f;
+  out->m[2][0] = o20; out->m[2][1] = o21; out->m[2][2] = o22; out->m[2][3] = 0.0f;
+
+  // Inverse translation: -M3^-1 * t.
+  out->m[3][0] = -(o00*tx + o10*ty + o20*tz);
+  out->m[3][1] = -(o01*tx + o11*ty + o21*tz);
+  out->m[3][2] = -(o02*tx + o12*ty + o22*tz);
+  out->m[3][3] = 1.0f;
+}
+
+/**
  * Rotates a matrix around an axis
  * @param mat result
  * @param axis axis to rotate around

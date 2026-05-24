@@ -32,7 +32,8 @@ typedef struct {
  */
 typedef struct {
   T3DBone* bones;
-  T3DMat4FP* boneMatricesFP; // fixed point matrix, used for rendering
+  T3DMat4FP* boneMatricesFP; // fixed point matrix, used for rendering — SKIN matrix (current * IBM)
+  T3DMat4* inverseBindPoses; // one per bone, computed once at create from the bind SRT chain
   uint8_t bufferCount; // number of matrices buffers
   uint8_t currentBufferIdx;
   const T3DChunkSkeleton* skeletonRef; // reference to the model, defines skeleton structure

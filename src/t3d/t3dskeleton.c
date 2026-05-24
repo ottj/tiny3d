@@ -11,12 +11,33 @@ T3DSkeleton t3d_skeleton_create_buffered(const T3DModel *model, int bufferCount)
   T3DSkeleton skel = (T3DSkeleton){
     .bones = malloc(sizeof(T3DBone) * skelRef->boneCount),
     .boneMatricesFP = malloc_uncached(sizeof(T3DMat4FP) * skelRef->boneCount * bufferCount),
+    .inverseBindPoses = malloc(sizeof(T3DMat4) * skelRef->boneCount),
     .skeletonRef = skelRef,
     .bufferCount = bufferCount,
     .currentBufferIdx = 0,
   };
 
   t3d_skeleton_reset(&skel);
+
+  // Compute and cache the inverse bind-pose matrix for each bone. Right after
+  // reset, bone->{scale,rotation,position} carries the bind SRT, so we walk
+  // the parent chain in index order (skeleton bones are stored in DFS order
+  // so parents always come before children) to build bind-pose world matrices,
+  // then invert each. The result is used by t3d_skeleton_update to compose
+  // the SKIN matrix (currentWorld * IBM) that gets uploaded to RSP.
+  for(int i = 0; i < skelRef->boneCount; i++) {
+    T3DBone *bone = &skel.bones[i];
+    const T3DChunkBone *boneDef = &skelRef->bones[i];
+    T3DMat4 localMat;
+    t3d_mat4_from_srt(&localMat, bone->scale.v, bone->rotation.v, bone->position.v);
+    if(boneDef->parentIdx != 0xFFFF) {
+      t3d_mat4_mul(&bone->matrix, &skel.bones[boneDef->parentIdx].matrix, &localMat);
+    } else {
+      bone->matrix = localMat;
+    }
+    t3d_mat4_invert_affine(&skel.inverseBindPoses[i], &bone->matrix);
+  }
+
   return skel;
 }
 
@@ -24,6 +45,7 @@ T3DSkeleton t3d_skeleton_clone(const T3DSkeleton *skel, bool useMatrices) {
   T3DSkeleton result = {
     .bones = malloc(sizeof(T3DBone) * skel->skeletonRef->boneCount),
     .boneMatricesFP = NULL,
+    .inverseBindPoses = NULL,
     .skeletonRef = skel->skeletonRef,
   };
   memcpy(result.bones, skel->bones, sizeof(T3DBone) * skel->skeletonRef->boneCount);
@@ -32,6 +54,13 @@ T3DSkeleton t3d_skeleton_clone(const T3DSkeleton *skel, bool useMatrices) {
     size_t copySize = sizeof(T3DMat4FP) * skel->skeletonRef->boneCount * skel->bufferCount;
     result.boneMatricesFP = malloc_uncached(copySize);
     memcpy(result.boneMatricesFP, skel->boneMatricesFP, copySize);
+
+    // IBMs are derived from skeletonRef (shared across all clones of the same
+    // skeleton) but copied per-instance so each owns its allocation — simpler
+    // ownership story than refcounting a shared pointer.
+    size_t ibmSize = sizeof(T3DMat4) * skel->skeletonRef->boneCount;
+    result.inverseBindPoses = malloc(ibmSize);
+    memcpy(result.inverseBindPoses, skel->inverseBindPoses, ibmSize);
   }
   return result;
 }
@@ -99,7 +128,13 @@ void t3d_skeleton_update(T3DSkeleton *skeleton)
         t3d_mat4_from_srt(&bone->matrix, bone->scale.v, bone->rotation.v, bone->position.v);
       }
 
-      t3d_mat4_to_fixed(&matStackFP[i], &bone->matrix);
+      // Compose SKIN matrix = currentBoneWorld * IBM. bone->matrix stays as
+      // the raw currentBoneWorld so parent-chain composition (above) keeps
+      // working correctly; the IBM fold-in happens only on the way out to
+      // the fixed-point matrix the RSP reads.
+      T3DMat4 skinMat;
+      t3d_mat4_mul(&skinMat, &bone->matrix, &skeleton->inverseBindPoses[i]);
+      t3d_mat4_to_fixed(&matStackFP[i], &skinMat);
 
       // if a bone has changed, we need to force updating it until it reached all buffers.
       // otherwise once the updating stops, and we cycle through buffers still, it would flicker.
@@ -128,6 +163,10 @@ void t3d_skeleton_destroy(T3DSkeleton *skeleton) {
   if(skeleton->boneMatricesFP != NULL) {
     free_uncached(skeleton->boneMatricesFP);
     skeleton->boneMatricesFP = NULL;
+  }
+  if(skeleton->inverseBindPoses != NULL) {
+    free(skeleton->inverseBindPoses);
+    skeleton->inverseBindPoses = NULL;
   }
   skeleton->skeletonRef = NULL;
 }

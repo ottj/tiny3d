@@ -71,15 +71,17 @@ void convertVertex(
   //auto posInt = mat * v.pos * modelScale;
   auto posInt = v.pos;
 
+  // Substep 3: position stays in model-space (bind-pose model coords). The
+  // inverse-bind-pose composition that used to live here is now folded into
+  // the runtime SKIN matrix by tiny3d's skeleton code (t3dskeleton.c writes
+  // currentBoneWorld * IBM to boneMatricesFP, so the RSP transform
+  // skinMat * modelSpacePos gives the same final position as the old
+  // (currentBoneWorld) * (IBM * modelSpacePos) bake. This shift is required
+  // for substep 4's per-vertex weighted blend where one vertex must be
+  // transformable by multiple bone matrices — only possible if position is
+  // in a single shared space, not pre-baked into one specific bone's frame.
   Mat4 normMat = mat;
   Vec3 norm = v.norm;
-  if(v.boneIndex >= 0) {
-    // pre-transform position into bone space
-    auto boneMat = matrices[v.boneIndex];
-    posInt = boneMat * (posInt);
-
-    normMat = boneMat * normMat;
-  }
 
   normMat[3] = Vec4{0.0f, 0.0f, 0.0f, 1.0f};
   norm = (normMat * norm).normalize();
