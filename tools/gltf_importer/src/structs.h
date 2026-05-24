@@ -61,6 +61,12 @@ namespace T3DM
     float color[4]{};
     Vec2 uv{};
     int32_t boneIndex{-1};
+    // sr64 m3 4 substep 5: real per-vertex skinning data from GLTF
+    // JOINTS_0/WEIGHTS_0. `boneIndex` stays as a convenience mirror
+    // of joints[0] (or -1 for unrigged) so the existing chunker's
+    // bone-grouping logic keeps working unchanged.
+    int32_t joints[4]{0, 0, 0, 0};
+    float weights[4]{0.0f, 0.0f, 0.0f, 0.0f};
   };
 
   struct VertexT3D {

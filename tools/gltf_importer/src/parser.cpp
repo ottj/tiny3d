@@ -301,12 +301,13 @@ T3DM::T3DMData T3DM::parseGLTF(const char *gltfPath, const T3DM::Config &config)
           for(int l = 0; l < acc->count; l++)
           {
             auto &v = vertices[l];
-            u32 joins[4];
             for(int c=0; c<4; ++c) {
-              joins[c] = Gltf::readAsU32(basePtr, acc->component_type); basePtr += elemSize;
+              v.joints[c] = (int32_t)Gltf::readAsU32(basePtr, acc->component_type);
+              basePtr += elemSize;
             }
-            //printf("  - %d %d %d %d\n", joins[0], joins[1], joins[2], joins[3]);
-            v.boneIndex = joins[0];
+            // boneIndex is the chunker's convenience field — mirror joints[0]
+            // (or -1 for unrigged / out-of-range).
+            v.boneIndex = v.joints[0];
             if(v.boneIndex >= boneCount || v.boneIndex < 0)v.boneIndex = -1;
           }
         }
@@ -318,11 +319,10 @@ T3DM::T3DMData T3DM::parseGLTF(const char *gltfPath, const T3DM::Config &config)
           for(int l = 0; l < acc->count; l++)
           {
             auto &v = vertices[l];
-            float weights[4];
             for(int c=0; c<4; ++c) {
-              weights[c] = Gltf::readAsFloat(basePtr, acc->component_type); basePtr += elemSize;
+              v.weights[c] = Gltf::readAsFloat(basePtr, acc->component_type);
+              basePtr += elemSize;
             }
-            //printf("  - %f %f %f %f\n", weights[0], weights[1], weights[2], weights[3]);
           }
         }
       }

@@ -127,19 +127,43 @@ void convertVertex(
     vT3D.t -= 16.0f;
   }
 
-  // substep 2 (format-only): synthesize single-bone palette entry from the legacy
-  // boneIndex. Real per-vertex JOINTS_0[0,1]+WEIGHTS_0[0,1] arrive in substep 4
-  // (when the RSP inner loop actually does the 2-bone weighted blend). For now
-  // joints[0] = the chunk's dominant bone (or 0 for unrigged), weights[0] = 255,
-  // slots 1-3 = 0 — the runtime ignores these bytes entirely.
-  vT3D.joints[0]  = (v.boneIndex >= 0) ? (uint8_t)v.boneIndex : 0;
-  vT3D.joints[1]  = 0;
-  vT3D.joints[2]  = 0;
-  vT3D.joints[3]  = 0;
-  vT3D.weights[0] = 255;
-  vT3D.weights[1] = 0;
-  vT3D.weights[2] = 0;
-  vT3D.weights[3] = 0;
+  // substep 5: real per-vertex skinning data from GLTF JOINTS_0 / WEIGHTS_0.
+  // joints[] hold skeleton-absolute bone indices (clamped to u8 = max 256
+  // skeleton bones; Halo grunt has 49 so the clamp is moot in practice).
+  // weights[] are u8 quantized from float 0..1 (× 255 + 0.5 rounding).
+  //
+  // Note these indices are still SKELETON-ABSOLUTE. The runtime (substep 6)
+  // builds a ≤ 8-entry palette per chunk by scanning unique joints and
+  // remaps these to palette-relative slots in place at load time. The on-
+  // disk .t3dm format is unchanged from substep 2 (T3DM_VERSION 0x06).
+  //
+  // Unrigged verts (boneIndex == -1) fall back to joint 0 with weight 255
+  // so the runtime can still treat them as single-bone w/ identity matrix.
+  if (v.boneIndex < 0) {
+    vT3D.joints[0]  = 0;
+    vT3D.joints[1]  = 0;
+    vT3D.joints[2]  = 0;
+    vT3D.joints[3]  = 0;
+    vT3D.weights[0] = 255;
+    vT3D.weights[1] = 0;
+    vT3D.weights[2] = 0;
+    vT3D.weights[3] = 0;
+  } else {
+    for (int c = 0; c < 4; ++c) {
+      int32_t j = v.joints[c];
+      vT3D.joints[c] = (j < 0 || j > 255) ? 0 : (uint8_t)j;
+      float w = v.weights[c];
+      if (w < 0.0f) w = 0.0f;
+      if (w > 1.0f) w = 1.0f;
+      vT3D.weights[c] = (uint8_t)(w * 255.0f + 0.5f);
+    }
+    // Defensive: if the GLTF source had no WEIGHTS_0 (or all zeros) but
+    // did have JOINTS_0, treat as rigid 1-bone via joints[0].
+    if (vT3D.weights[0] == 0 && vT3D.weights[1] == 0 &&
+        vT3D.weights[2] == 0 && vT3D.weights[3] == 0) {
+      vT3D.weights[0] = 255;
+    }
+  }
 
   vT3D.hash = hashVertex(vT3D, v.boneIndex);
   vT3D.boneIndex = v.boneIndex;
