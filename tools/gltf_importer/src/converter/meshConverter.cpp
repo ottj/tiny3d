@@ -9,6 +9,7 @@
 #include <random>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include "converter.h"
 
 namespace
@@ -219,6 +220,48 @@ T3DM::ModelChunked chunkUpModel(const T3DM::Model &model)
           vertsByBone[vert.boneIndex].push_back(vert);
         }
 
+        // sr64 substep 5b — palette-fit short-circuit.
+        // When we have multiple distinct joints[0] values, the legacy
+        // path below per-bone-splits the chunk so tiny3d's rigid-skin
+        // pipeline can push one bone matrix per sub-chunk. That defeats
+        // the point of the substep-5 per-vertex joints[0..1]+weights
+        // data — seam verts that legitimately blend between two bones
+        // would end up arbitrarily assigned to one bone's chunk, with
+        // their secondary-bone contribution lost.
+        //
+        // Instead, scan the would-be palette (joints[0..1] of every vert
+        // where the matching weight > 0). If it fits in the sr64
+        // runtime's 8-slot MATRIX_PALETTE, leave the chunk intact and
+        // mark it as "no rigid bone push" (boneIndex = 0xFFFF). The
+        // sr64 weighted-skin path (halo_skinning_register_model) walks
+        // the chunk's per-vertex joints to build the real palette at
+        // load time, so every seam vert keeps its proper 2-bone blend.
+        //
+        // The legacy per-bone split stays as the > 8 fallback. The
+        // bone-density survey says 91.5% of Halo tier-1 primitives fit
+        // in 8 bones; the rest (cyborg/fp at 36, cortana at 29, etc)
+        // are out of scope here — they'd hit the runtime's
+        // palette-overflow check and drop to static rest pose for the
+        // affected model.
+        bool fitsInPalette = false;
+        if (vertsByBone.size() > 1) {
+          std::unordered_set<int32_t> paletteBones;
+          for (uint32_t v = chunkOffset; v < chunkOffset + emittedVerts; ++v) {
+            const auto& vert = res.vertices[v];
+            for (int s = 0; s < 2; ++s) {
+              if (vert.weights[s] > 0) {
+                paletteBones.insert((int32_t)vert.joints[s]);
+              }
+            }
+          }
+          fitsInPalette = (paletteBones.size() <= 8);
+        }
+
+        if (vertsByBone.size() > 1 && fitsInPalette) {
+          // Keep chunk intact; mark no-rigid-push for runtime.
+          res.chunks.back().boneIndex = 0xFFFF;
+          res.chunks.back().boneCount = (uint32_t)vertsByBone.size();
+        } else
         // if we only have one bone (can also mean no bones at all) -> do nothing
         if(vertsByBone.size() > 1)
         {
