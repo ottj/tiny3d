@@ -48,9 +48,20 @@ typedef struct {
   /* 0x14 */ uint32_t rgbaB; // RGBA8 color
   /* 0x18 */ int16_t stA[2]; // UV fixed point 10.5 (pixel coords)
   /* 0x1C */ int16_t stB[2]; // UV fixed point 10.5 (pixel coords)
+  // Skinning palette indices + weights. 4 slots per vertex (vs the 2 we
+  // currently blend) to keep the pair-stride a multiple of 16 bytes — the
+  // RSP vec16 load (lqv) used by the loop's pre-fetch requires 16-byte
+  // alignment of the source address. Pair stride: 32B base + 16B
+  // skin = 48B. Slots 2-3 are reserved (importer fills them with 0); the
+  // 2-bone blend in the inner loop ignores them. Future 4-bone work can
+  // light them up without a format break.
+  /* 0x20 */ uint8_t jointsA[4];  // per-vertex bone palette indices
+  /* 0x24 */ uint8_t weightsA[4]; // per-vertex weights (u8, 255 = full weight on slot 0)
+  /* 0x28 */ uint8_t jointsB[4];
+  /* 0x2C */ uint8_t weightsB[4];
 } __attribute__((aligned(8))) T3DVertPacked;
 
-static_assert(sizeof(T3DVertPacked) == 0x20, "T3DVertPacked has wrong size");
+static_assert(sizeof(T3DVertPacked) == 0x30, "T3DVertPacked has wrong size");
 
 enum T3DDrawFlags {
   T3D_FLAG_DEPTH      = 1 << 0,

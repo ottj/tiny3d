@@ -323,7 +323,7 @@ T3DCmd_VertLoad:
   vcl $v29, $v06, $v02                               ## L:484  |    101 | u32 clipCodes = clip(posClip, clipPlaneW);
   addu $sp, $s5, $s1                                 ## L:541  |      ^ | fogB = ptrBuffB + fogStoreOffset;
   TAG_LightMul: vmulf $v04, $v04, $v03.v                           ## L:499  |    102 | color:sfract *= lightColor:ufract;
-  lqv $v08, 0, 32, $s4                               ## L:565  |      ^ | pos = load(prt3d, 0x20);
+  lqv $v08, 0, 48, $s4                               ## L:565  |      ^ | pos = load(prt3d, 0x30); -- hand-patched: pair stride 0x20->0x30 (48B/pair = 32B base + 16B joints+weights). Full rspl regen deferred (upstream .S preserves #if RSPQ_PROFILE branches the modern tool collapses, blowing DMEM).
   vmudl $v06, $v06, $v10.v                           ## L:501  |    103 | posClip *= normScaleW:ufract;
   cfc2 $t3, $vcc                                     ## L:484  |      ^ | u32 clipCodes = clip(posClip, clipPlaneW);
   vmadm $v05, $v05, $v10.v                           ## L:501  |    104 | posClip *= normScaleW:ufract;
@@ -374,7 +374,7 @@ T3DCmd_VertLoad:
   srl $t2, $t5, 5                                    ## L:254  |    128 | u32 tmp = res >> 5;
   vmadh $v05, $v12, $v30.e7                          ## L:545  |      ^ | posClip:sint = screenOffset:sint +* 1;
   ldv $v03, 0, 24, $s4                               ## L:551  |    129 | vec16 uv = load(prt3d, 0x18).xyzw;
-  addiu $s4, $s4, 32                                 ## L:570  |    130 | prt3d += 0x20;
+  addiu $s4, $s4, 48                                 ## L:570  |    130 | prt3d += 0x30; -- hand-patched, see above.
   nor $t5, $t5, $t2                                  ## L:255  |    131 | res = res ~| tmp;
   vmudn $v29, $v29, $v30.e6                          ## L:547  |      ^ | VTEMP <<= 1;
   sdv $v05, 0, 0, $s6                                ## L:553  |    132 | @Barrier("pos-cc") store(posClip:sint.xyzw, ptrBuffA, 0x00); ## Barrier: 0x2

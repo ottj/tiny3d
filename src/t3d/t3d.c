@@ -33,7 +33,7 @@ uint32_t T3D_RSP_ID = 0;
 #define MIN(a,b) (a) < (b) ? (a) : (b)
 #define CLAMP(x, min, max) MIN(MAX((x), (min)), (max))
 
-#define VERT_INPUT_SIZE  16
+#define VERT_INPUT_SIZE  24
 #define VERT_OUTPUT_SIZE 36
 
 static T3DViewport *currentViewport = NULL;

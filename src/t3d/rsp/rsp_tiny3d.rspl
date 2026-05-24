@@ -527,12 +527,12 @@ command<4> T3DCmd_VertLoad(u32 bufferSize, u32 rdramVerts, u32 addressInOut)
 
     uv += uvGenArgs;
 
-    pos = load(prt3d, 0x20); // load next pos
+    pos = load(prt3d, 0x30); // load next pos (stride = 48B / pair: 32B base + 16B joints/weights — 16-aligned for lqv)
     vec16 oldNorm = norm;
     norm = normMask & pos.wwwwWWWW;
     norm *= normShift;
 
-    prt3d += 0x20;
+    prt3d += 0x30;
 
     vertexFxFunc(); // handles the loop condition internally
 

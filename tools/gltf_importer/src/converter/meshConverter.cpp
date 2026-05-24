@@ -125,6 +125,20 @@ void convertVertex(
     vT3D.t -= 16.0f;
   }
 
+  // substep 2 (format-only): synthesize single-bone palette entry from the legacy
+  // boneIndex. Real per-vertex JOINTS_0[0,1]+WEIGHTS_0[0,1] arrive in substep 4
+  // (when the RSP inner loop actually does the 2-bone weighted blend). For now
+  // joints[0] = the chunk's dominant bone (or 0 for unrigged), weights[0] = 255,
+  // slots 1-3 = 0 — the runtime ignores these bytes entirely.
+  vT3D.joints[0]  = (v.boneIndex >= 0) ? (uint8_t)v.boneIndex : 0;
+  vT3D.joints[1]  = 0;
+  vT3D.joints[2]  = 0;
+  vT3D.joints[3]  = 0;
+  vT3D.weights[0] = 255;
+  vT3D.weights[1] = 0;
+  vT3D.weights[2] = 0;
+  vT3D.weights[3] = 0;
+
   vT3D.hash = hashVertex(vT3D, v.boneIndex);
   vT3D.boneIndex = v.boneIndex;
 }

@@ -348,6 +348,14 @@ void T3DM::writeT3DM(
       chunkVerts.write(vertA.t);
       chunkVerts.write(vertB.s);
       chunkVerts.write(vertB.t);
+
+      // skinning palette indices + weights, 4 slots per vert (slots 2-3 reserved,
+      // see structs.h). substep 2: only slot 0 has real data; substep 4 lights up
+      // slot 1 for actual 2-bone weighting.
+      chunkVerts.writeArray(vertA.joints,  4);
+      chunkVerts.writeArray(vertA.weights, 4);
+      chunkVerts.writeArray(vertB.joints,  4);
+      chunkVerts.writeArray(vertB.weights, 4);
     }
     totalVertCount += chunks.vertices.size();
 

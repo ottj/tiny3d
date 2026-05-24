@@ -69,6 +69,13 @@ namespace T3DM
     /* 0x08 */ uint32_t rgba{}; // RGBA8 color
     /* 0x0C */ int16_t s{}; // 10.6 fixed point (pixel coords)
     /* 0x0E */ int16_t t{}; // 10.6 fixed point (pixel coords)
+    // Skinning: 4 slots per vertex. Only slots 0-1 carry real data through
+    // substep 4 (Halo grunt is 2-bone weighted); slots 2-3 stay zero. 4-slot
+    // layout chosen so the on-disk pair stride is a multiple of 16 bytes,
+    // matching the RSP vec16 (lqv) alignment requirement. Pair: 32B base +
+    // 16B skin = 48B.
+    /* 0x10 */ uint8_t joints[4]{};  // per-vertex bone palette indices
+    /* 0x14 */ uint8_t weights[4]{}; // per-vertex weights (u8, 255 = full weight on slot 0)
 
     // Extra attributes not used in the final vertex data:
     uint64_t hash{};
@@ -86,7 +93,7 @@ namespace T3DM
     //bool operator<=>(const VertexT3D&) const = default;
   };
 
-  static_assert(VertexT3D::byteSize() == 0x10, "VertexT3D has wrong size");
+  static_assert(VertexT3D::byteSize() == 0x18, "VertexT3D has wrong size");
 
   struct TriangleT3D {
     VertexT3D vert[3]{};
@@ -292,7 +299,7 @@ namespace T3DM
 
   constexpr int MAX_VERTEX_COUNT = 70;
   constexpr int CACHE_VERTEX_SIZE = 36;
-  constexpr u8 T3DM_VERSION = 0x04;
+  constexpr u8 T3DM_VERSION = 0x05;
 
   void writeT3DM(
     const Config &config,
