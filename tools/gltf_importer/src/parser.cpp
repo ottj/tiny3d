@@ -21,6 +21,26 @@
 #include "parser/rdp.h"
 #include "converter/converter.h"
 
+// sr64 7.9c — name-driven far-LOD. A node named with a trailing
+// `__lodfar{NN}` is a distance LOD generated via meshopt_simplify;
+// NN is the target triangle percentage (1..100). Bare `__lodfar`
+// defaults to 50%. Returns 0 when the name carries no LOD tag (the
+// common case — generic capability, only fires on tagged nodes the
+// sr64 walker emits for high-poly scenery). Mirrors the `__perm{pi}`
+// node-name tagging the walker uses for permutation variants (7.9b).
+static size_t parseLodFarPercent(const std::string &name)
+{
+  auto pos = name.rfind("__lodfar");
+  if(pos == std::string::npos) return 0;
+  const char *p = name.c_str() + pos + 8;  // past "__lodfar"
+  if(*p == '\0') return 50;                // bare tag → 50%
+  size_t v = 0; bool any = false;
+  while(*p >= '0' && *p <= '9') { v = v * 10 + (size_t)(*p - '0'); ++p; any = true; }
+  if(!any || *p != '\0') return 0;         // malformed suffix
+  if(v == 0) return 0;
+  return v > 100 ? 100 : v;
+}
+
 void printBoneTree(const T3DM::Bone &bone, int depth)
 {
   for(int i=0; i<depth; ++i)printf("  ");
@@ -354,6 +374,31 @@ T3DM::T3DMData T3DM::parseGLTF(const char *gltfPath, const T3DM::Config &config)
       // optimizations
       meshopt_optimizeVertexCache(indices.data(), indices.data(), indices.size(), vertices.size());
       //meshopt_optimizeOverdraw(indices.data(), indices.data(), indices.size(), &vertices[0].pos.data[0], vertices.size(), sizeof(VertexNorm), 1.05f);
+
+      // sr64 7.9c — far-LOD decimation. When this node is a `__lodfar{NN}`
+      // LOD sibling, collapse it to ~NN% of its triangles via
+      // meshopt_simplify. The full-detail near version is a separate
+      // (untagged) object the runtime distance-selects against. Unused
+      // vertices simply stop being referenced and drop out at chunking.
+      if(size_t lodPct = parseLodFarPercent(model.name); lodPct > 0 && indices.size() >= 6) {
+        size_t targetIdx = (indices.size() * lodPct) / 100;
+        targetIdx -= targetIdx % 3;           // whole triangles
+        if(targetIdx < 3) targetIdx = 3;
+        std::vector<uint16_t> simplified(indices.size());
+        float resultError = 0.0f;
+        // Generous target_error so target_index_count drives (far LODs
+        // are small on screen; aggressive collapse is acceptable).
+        size_t newCount = meshopt_simplify(
+          simplified.data(), indices.data(), indices.size(),
+          &vertices[0].pos.data[0], vertices.size(), sizeof(VertexNorm),
+          targetIdx, 0.1f, 0u, &resultError);
+        simplified.resize(newCount);
+        indices = std::move(simplified);
+        if(config.verbose) {
+          printf("[%s] far-LOD %zu%%: %zu tris (err %.3f)\n",
+                 model.name.c_str(), lodPct, newCount / 3, resultError);
+        }
+      }
 
       // expand into triangles, this is used to split up and dedupe data
       model.triangles.reserve(indices.size() / 3);
