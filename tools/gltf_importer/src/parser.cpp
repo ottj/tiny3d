@@ -303,7 +303,18 @@ T3DM::T3DMData T3DM::parseGLTF(const char *gltfPath, const T3DM::Config &config)
           }
         }
 
-        if(attr->type == cgltf_attribute_type_texcoord)
+        // sr64: BSP glTFs carry TWO texcoord sets — TEXCOORD_0 = diffuse,
+        // TEXCOORD_1 = lightmap. The original loop reads EVERY texcoord attribute
+        // into v.uv, so the last one (TEXCOORD_1/lightmap) wins and the diffuse
+        // texture gets sampled at the lightmap UVs. For most tiling surfaces the
+        // lightmap UV spans a big-enough atlas region that this looks fine, but for
+        // atlas billboards (trees_filler / treesclump_filler) the lightmap UV is a
+        // tiny per-card spot, collapsing every tree card to one texel (flat olive).
+        // Gate the diffuse-only (index 0) read to "_filler" so the tree cards map
+        // their full diffuse strip; every other BSP material keeps the original
+        // last-wins behaviour so the level the user is happy with is untouched.
+        bool sr64FillerMat = model.materialName.find("_filler") != std::string::npos;
+        if(attr->type == cgltf_attribute_type_texcoord && (!sr64FillerMat || attr->index == 0))
         {
           assert(attr->data->type == cgltf_type_vec2);
 
@@ -361,6 +372,18 @@ T3DM::T3DMData T3DM::parseGLTF(const char *gltfPath, const T3DM::Config &config)
 
       if(matInfo.texSizeX == 0)matInfo.texSizeX = 32;
       if(matInfo.texSizeY == 0)matInfo.texSizeY = 32;
+
+      // sr64: filler-billboard shaders (trees_filler / treesclump_filler) are a
+      // multi-tree ATLAS rendered on a downscaled CI4 sprite. Under
+      // --ignore-materials the default texSize=32 bakes the atlas UVs in texel
+      // space for a 32×32 sprite (~6px/tree). Bump to 64 so the runtime can bind
+      // a 64×64 keyed sprite (CI4 TMEM max) and the strips map 1:1 at ~13px/tree.
+      // Name-gated to "_filler" so every other BSP material keeps texSize=32
+      // (tiling senv/metal are unaffected; their sprites stay 32).
+      if(model.materialName.find("_filler") != std::string::npos) {
+        matInfo.texSizeX = 64;
+        matInfo.texSizeY = 64;
+      }
 
       // convert vertices
       Mat4 mat = config.ignoreTransforms ? Mat4{} : parseNodeMatrix(node, true);
