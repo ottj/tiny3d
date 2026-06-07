@@ -304,17 +304,19 @@ T3DM::T3DMData T3DM::parseGLTF(const char *gltfPath, const T3DM::Config &config)
         }
 
         // sr64: BSP glTFs carry TWO texcoord sets — TEXCOORD_0 = diffuse,
-        // TEXCOORD_1 = lightmap. The original loop reads EVERY texcoord attribute
-        // into v.uv, so the last one (TEXCOORD_1/lightmap) wins and the diffuse
-        // texture gets sampled at the lightmap UVs. For most tiling surfaces the
-        // lightmap UV spans a big-enough atlas region that this looks fine, but for
-        // atlas billboards (trees_filler / treesclump_filler) the lightmap UV is a
-        // tiny per-card spot, collapsing every tree card to one texel (flat olive).
-        // Gate the diffuse-only (index 0) read to "_filler" so the tree cards map
-        // their full diffuse strip; every other BSP material keeps the original
-        // last-wins behaviour so the level the user is happy with is untouched.
-        bool sr64FillerMat = model.materialName.find("_filler") != std::string::npos;
-        if(attr->type == cgltf_attribute_type_texcoord && (!sr64FillerMat || attr->index == 0))
+        // TEXCOORD_1 = lightmap. The lightmap is baked into vertex COLOR_0 at
+        // convert time (halo_bsp.py), so the RUNTIME never samples a lightmap
+        // texture by UV — it only needs the DIFFUSE UV. The original loop read
+        // EVERY texcoord into v.uv (last-wins → TEXCOORD_1/lightmap won), so the
+        // diffuse (and any tiled 2nd map) sampled at the lightmap UVs: invisible
+        // on wrap-invariant tiling surfaces, but it collapsed atlas billboards
+        // (trees_filler — first fixed by gating index 0 to "_filler") AND it
+        // makes a tiled 2nd map (the senv BUMP_SHADE relief) show no pattern,
+        // since the bump then tiles over a tiny lightmap-atlas spot instead of
+        // the diffuse UV. So read ONLY index 0 (the diffuse UV) for EVERY
+        // material: correct for BSP (drops the now-unneeded lightmap UV; lighting
+        // stays in COLOR_0) and a no-op for models/sky (single UV anyway).
+        if(attr->type == cgltf_attribute_type_texcoord && attr->index == 0)
         {
           assert(attr->data->type == cgltf_type_vec2);
 
