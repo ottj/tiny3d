@@ -280,6 +280,14 @@ namespace T3DM
     bool createBVH{false};
     bool verbose{false};
     bool ignoreTransforms{false};
+    // sr64: when set, animation metadata is NOT baked into the .t3dm as
+    // 'A' chunks. Instead each anim's {duration, channel counts,
+    // channelMappings[]} is written to a `<base>.<i>.sanim` sidecar and
+    // the anim names to a `<base>.animidx` index, so the metadata can be
+    // streamed/loaded per-anim at runtime instead of sitting resident in
+    // the monolithic model allocation. Keyframe `.sdata` files are
+    // written either way. See sr64 notes/anim-streaming.md.
+    bool animsExternal{false};
     std::string assetPath{};
     std::string assetPathFull{};
     std::filesystem::path projectPath{};

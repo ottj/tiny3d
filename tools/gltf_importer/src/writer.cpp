@@ -62,6 +62,19 @@ namespace {
     std::replace(sdataPath.begin(), sdataPath.end(), '\\', '/');
     return sdataPath + "." + std::to_string(idx) + ".sdata";
   }
+
+  // sr64: `<base>.<idx>.<ext>` and `<base>.animidx` sidecar paths for
+  // externalized animation metadata (--anims-external).
+  std::string getSidecarPath(const char* filePath, uint32_t idx, const char* ext) {
+    auto base = std::string(filePath).substr(0, std::string(filePath).size()-5);
+    std::replace(base.begin(), base.end(), '\\', '/');
+    return base + "." + std::to_string(idx) + "." + ext;
+  }
+  std::string getAnimIndexPath(const char* filePath) {
+    auto base = std::string(filePath).substr(0, std::string(filePath).size()-5);
+    std::replace(base.begin(), base.end(), '\\', '/');
+    return base + ".animidx";
+  }
 }
 
 void T3DM::writeT3DM(
@@ -120,7 +133,8 @@ void T3DM::writeT3DM(
     aabbMax[2] = std::max(aabbMax[2], chunks.aabbMax[2]);
   }
   chunkCount += t3dm.skeletons.empty() ? 0 : 1;
-  chunkCount += t3dm.animations.size();
+  // sr64 --anims-external: anims become .sanim sidecars, not 'A' chunks.
+  if(!config.animsExternal) chunkCount += t3dm.animations.size();
 
   std::vector<BinaryFile> streamFiles{};
 
@@ -362,21 +376,30 @@ void T3DM::writeT3DM(
     ++m;
   }
 
+  // sr64 --anims-external: collected per-anim .sanim sidecars + name index.
+  std::vector<BinaryFile> animMetaFiles{};
+  BinaryFile animNameRecords{};
   uint16_t animIdx = 0;
   for(const auto &anim : t3dm.animations) {
     BinaryFile streamFile{};
-    file.align(4);
-    addToChunkTable('A');
 
-    file.write(insertString(stringTable, anim.name));
-    file.write<float>(anim.duration);
-    file.write<uint32_t>(anim.keyframes.size());
-    file.write<uint16_t>(anim.channelCountQuat);
-    file.write<uint16_t>(anim.channelCountScalar);
-    file.write<uint32_t>(insertString(stringTable,
-      getRomPath(getStreamDataPath(t3dmPath.c_str(), animIdx))
-    ));
+    // Animation metadata: either an in-model 'A' chunk (default) or, with
+    // --anims-external, a .sanim sidecar built below after the keyframes.
+    if(!config.animsExternal) {
+      file.align(4);
+      addToChunkTable('A');
 
+      file.write(insertString(stringTable, anim.name));
+      file.write<float>(anim.duration);
+      file.write<uint32_t>(anim.keyframes.size());
+      file.write<uint16_t>(anim.channelCountQuat);
+      file.write<uint16_t>(anim.channelCountScalar);
+      file.write<uint32_t>(insertString(stringTable,
+        getRomPath(getStreamDataPath(t3dmPath.c_str(), animIdx))
+      ));
+    }
+
+    // Keyframe stream → `.sdata` (identical in both modes).
     std::unordered_set<uint32_t> channelHasKF{};
     for(int k=0; k<anim.keyframes.size(); ++k) {
       bool isLastKF = (k >= anim.keyframes.size()-1);
@@ -404,12 +427,36 @@ void T3DM::writeT3DM(
     }
     streamFiles.push_back(streamFile);
 
-    for(const auto &ch : anim.channelMap) {
-      file.write(ch.targetIdx);
-      file.write(ch.targetType);
-      file.write(ch.attributeIdx);
-      file.write((ch.valueMax - ch.valueMin) / (float)0xFFFF);
-      file.write(ch.valueMin);
+    if(config.animsExternal) {
+      // .sanim = small header + a channelMappings block that is
+      // BYTE-IDENTICAL to the in-chunk version below, so the sr64
+      // runtime reads it straight into a synthesized T3DChunkAnim.
+      BinaryFile meta{};
+      meta.writeChars("SANM", 4);
+      meta.write<uint8_t>(1); // version
+      meta.write<uint8_t>(0); meta.write<uint8_t>(0); meta.write<uint8_t>(0);
+      meta.write<float>(anim.duration);
+      meta.write<uint32_t>(anim.keyframes.size());
+      meta.write<uint16_t>(anim.channelCountQuat);
+      meta.write<uint16_t>(anim.channelCountScalar);
+      for(const auto &ch : anim.channelMap) {
+        meta.write(ch.targetIdx);
+        meta.write(ch.targetType);
+        meta.write(ch.attributeIdx);
+        meta.write((ch.valueMax - ch.valueMin) / (float)0xFFFF);
+        meta.write(ch.valueMin);
+      }
+      animMetaFiles.push_back(meta);
+      animNameRecords.write<uint16_t>((uint16_t)anim.name.size());
+      animNameRecords.writeChars(anim.name.c_str(), anim.name.size());
+    } else {
+      for(const auto &ch : anim.channelMap) {
+        file.write(ch.targetIdx);
+        file.write(ch.targetType);
+        file.write(ch.attributeIdx);
+        file.write((ch.valueMax - ch.valueMin) / (float)0xFFFF);
+        file.write(ch.valueMin);
+      }
     }
 
     ++animIdx;
@@ -471,5 +518,22 @@ void T3DM::writeT3DM(
   for(int s=0; s<streamFiles.size(); ++s) {
     auto sdataPath = getStreamDataPath(t3dmPath.c_str(), s);
     streamFiles[s].writeToFile(sdataPath.c_str());
+  }
+
+  // sr64 --anims-external: per-anim .sanim sidecars + a `.animidx` name
+  // index (magic + count + length-prefixed names in anim order).
+  if(config.animsExternal) {
+    for(size_t s=0; s<animMetaFiles.size(); ++s) {
+      auto sanimPath = getSidecarPath(t3dmPath.c_str(), (uint32_t)s, "sanim");
+      animMetaFiles[s].writeToFile(sanimPath.c_str());
+    }
+    BinaryFile idx{};
+    idx.writeChars("ANIX", 4);
+    idx.write<uint8_t>(1); // version
+    idx.write<uint8_t>(0); idx.write<uint8_t>(0); idx.write<uint8_t>(0);
+    idx.write<uint32_t>((uint32_t)animMetaFiles.size());
+    idx.writeMemFile(animNameRecords);
+    auto idxPath = getAnimIndexPath(t3dmPath.c_str());
+    idx.writeToFile(idxPath.c_str());
   }
 }

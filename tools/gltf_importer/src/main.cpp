@@ -24,6 +24,7 @@ int main(int argc, char* argv[])
     printf("  --ignore-materials: Ignore F3D materials and write dummy data, useful for custom material systems\n");
     printf("  --ignore-transforms: Ignore all object transforms, can be used to force objects to be at (0,0,0)\n");
     printf("  --asset-path=<path>: Base asset path, default is 'assets/'\n");
+    printf("  --anims-external: Write anim metadata to .sanim/.animidx sidecars instead of baking 'A' chunks into the .t3dm (sr64 anim streaming)\n");
     printf("  --verbose: Enable verbose output\n");
     return 1;
   }
@@ -37,6 +38,7 @@ int main(int argc, char* argv[])
   config.ignoreTransforms = args.checkArg("--ignore-transforms");
   config.createBVH = args.checkArg("--bvh");
   config.verbose = args.checkArg("--verbose");
+  config.animsExternal = args.checkArg("--anims-external");
 
   config.assetPath = args.getStringArg("--asset-path");
   if(config.assetPath.empty()) {
