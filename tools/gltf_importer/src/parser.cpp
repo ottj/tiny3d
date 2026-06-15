@@ -411,12 +411,24 @@ T3DM::T3DMData T3DM::parseGLTF(const char *gltfPath, const T3DM::Config &config)
         if(targetIdx < 3) targetIdx = 3;
         std::vector<uint16_t> simplified(indices.size());
         float resultError = 0.0f;
+        // sr64 BSP LOD: lock the mesh border for per-subcluster BSP far
+        // bands (names carry `__sub`). Each BSP object is one subcluster's
+        // slice of contiguous terrain, so the subcluster boundary is an
+        // OPEN edge of the object; collapsing it independently per
+        // subcluster cracks the seam where a far subcluster meets a near
+        // (or differently-decimated) neighbour. Locking the border keeps
+        // every object's boundary verts at their original positions, so
+        // adjacent subclusters stay watertight. Props (`geom…`) are
+        // isolated objects → keep the old free-border collapse.
+        const unsigned int simplifyOpts =
+          (model.name.find("__sub") != std::string::npos)
+            ? meshopt_SimplifyLockBorder : 0u;
         // Generous target_error so target_index_count drives (far LODs
         // are small on screen; aggressive collapse is acceptable).
         size_t newCount = meshopt_simplify(
           simplified.data(), indices.data(), indices.size(),
           &vertices[0].pos.data[0], vertices.size(), sizeof(VertexNorm),
-          targetIdx, 0.1f, 0u, &resultError);
+          targetIdx, 0.1f, simplifyOpts, &resultError);
         simplified.resize(newCount);
         indices = std::move(simplified);
         if(config.verbose) {
