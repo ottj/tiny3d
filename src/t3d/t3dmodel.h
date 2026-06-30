@@ -202,6 +202,34 @@ enum T3DModelChunkType {
  */
 T3DModel* t3d_model_load(const char *path);
 
+/// Allocator callback for t3d_model_load_alloc: return a buffer of `size` bytes
+/// (or NULL on OOM) for the single model allocation. `ctx` is passed through.
+typedef void* (*T3DModelAllocFn)(size_t size, void *ctx);
+
+/**
+ * Apply in-place pointer fixups + cache flush to an already-loaded .t3dm blob.
+ * Use when you loaded the blob into your own buffer; t3d_model_load calls this
+ * internally. `model` is the blob base, `size` its byte length.
+ */
+void t3d_model_patch(T3DModel *model, int size);
+
+/**
+ * Like t3d_model_load, but the single model allocation comes from
+ * alloc(size, ctx) instead of malloc. Returns NULL (gracefully) if alloc
+ * returns NULL — lets a caller with a bounded pool fall back instead of
+ * asserting. NOTE: such a model must NOT be passed to t3d_model_free (which
+ * calls libc free()); use t3d_model_cleanup then free the buffer with your
+ * own allocator.
+ */
+T3DModel* t3d_model_load_alloc(const char *path, T3DModelAllocFn alloc, void *ctx);
+
+/**
+ * Free a model's GPU-side resources (rspq blocks, cached textures) WITHOUT
+ * freeing the model blob. Pair with a custom allocator's free for blobs that
+ * did not come from malloc. t3d_model_free = t3d_model_cleanup + free(model).
+ */
+void t3d_model_cleanup(T3DModel *model);
+
 // callback for custom drawing, this hooks into the tile-setting section
 typedef void (*T3DModelTileCb)(void* userData, rdpq_texparms_t *tileParams, rdpq_tile_t tile);
 typedef bool (*T3DModelFilterCb)(void* userData, const T3DObject *obj);

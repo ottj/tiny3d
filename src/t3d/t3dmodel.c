@@ -4,6 +4,7 @@
 */
 
 #include "t3dmodel.h"
+#include <stdio.h> // FILE/fread/fclose for t3d_model_load_alloc
 
 #define T3DM_VERSION 0x06
 
@@ -181,13 +182,16 @@ static bool handle_bone_matrix(const T3DObjectPart *part, const T3DMat4FP* matSt
   return hadMatrixPush;
 }
 
-T3DModel *t3d_model_load(const char *path) {
-  int size = 0;
-  T3DModel* model = asset_load(path, &size);
+// Apply in-place pointer fixups + cache flush to a freshly-loaded .t3dm blob of
+// `size` bytes whose base address is `model`. Public so a caller that loaded the
+// blob into its OWN buffer (custom allocator, e.g. sr64's churn region) can patch
+// it identically to t3d_model_load. Split out of t3d_model_load for sr64's
+// caller-controlled allocation work.
+void t3d_model_patch(T3DModel *model, int size) {
   int32_t ptrOffset = (int32_t)(void*)model;
 
   if(memcmp(model->magic, "T3M", 3) != 0) {
-    assertf(false, "Invalid T3D model file: %s", path);
+    assertf(false, "Invalid T3D model data (bad magic)");
   }
   assertf(model->magic[3] == T3DM_VERSION,
     "Invalid T3D model version: %d != %d\n"
@@ -267,6 +271,30 @@ T3DModel *t3d_model_load(const char *path) {
   }
 
   data_cache_hit_writeback_invalidate(model, size);
+}
+
+T3DModel *t3d_model_load(const char *path) {
+  int size = 0;
+  T3DModel* model = asset_load(path, &size);
+  t3d_model_patch(model, size);
+  return model;
+}
+
+// Like t3d_model_load, but the single model allocation comes from alloc(size,ctx)
+// instead of malloc. Returns NULL GRACEFULLY if alloc returns NULL, so a caller
+// whose pool is full can fall back to a coarser LOD instead of OOM-asserting.
+// Added for sr64's churn-region sub-allocator.
+T3DModel *t3d_model_load_alloc(const char *path, T3DModelAllocFn alloc, void *ctx) {
+  int size = 0;
+  FILE *f = asset_fopen(path, &size);
+  if(f == NULL) return NULL;
+  T3DModel *model = (T3DModel*)alloc((size_t)size, ctx);
+  if(model == NULL) { fclose(f); return NULL; }
+  size_t rd = fread(model, 1, (size_t)size, f);
+  fclose(f);
+  assertf(rd == (size_t)size,
+    "t3d_model_load_alloc: short read %u/%d for %s", (unsigned)rd, size, path);
+  t3d_model_patch(model, size);
   return model;
 }
 
@@ -443,7 +471,12 @@ void t3d_model_draw_material(T3DMaterial *mat, T3DModelState *state)
 
 }
 
-void t3d_model_free(T3DModel *model) {
+// Free a model's GPU-side resources (rspq blocks, cached textures) WITHOUT
+// freeing the model blob itself. Use when the blob came from a custom allocator;
+// the caller frees the buffer afterwards. t3d_model_free = this + free(model).
+// Split out for sr64's churn-region sub-allocator (whose blobs must NOT hit the
+// libc free()).
+void t3d_model_cleanup(T3DModel *model) {
   bool txtErased = false;
 
   if(model->userBlock) {
@@ -469,8 +502,12 @@ void t3d_model_free(T3DModel *model) {
       if(obj->userBlock)rspq_block_free(obj->userBlock);
     }
   }
-  free(model);
   if(txtErased) texture_cache_free_mem();
+}
+
+void t3d_model_free(T3DModel *model) {
+  t3d_model_cleanup(model);
+  free(model);
 }
 
 T3DChunkAnim *t3d_model_get_animation(const T3DModel *model, const char *name) {
