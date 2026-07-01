@@ -425,6 +425,17 @@ T3DM::T3DMData T3DM::parseGLTF(const char *gltfPath, const T3DM::Config &config)
             ? meshopt_SimplifyLockBorder : 0u;
         // Generous target_error so target_index_count drives (far LODs
         // are small on screen; aggressive collapse is acceptable).
+        // NOTE (2026-06-21, rev 2026-07-01): this in-importer meshopt pass is
+        // SUPERSEDED FOR BSP by the offline MeshLib stage (sr64
+        // docker/decimate-bsp/decimate_far_bands.py). Why meshopt can't do BSP
+        // far bands: they're fed UN-WELDED (attribute-split: every material/UV/
+        // lightmap seam is a duplicate vert), so LockBorder treats every seam as
+        // a locked border and floors collapse at the seam-vert count well before
+        // target_error bites. MeshLib does the position-weld FIRST, then
+        // decimates, then STRIPS the `__lodfar` tag — so for BSP this block is
+        // skipped entirely (parseLodFarPercent()==0). This path still runs for
+        // non-BSP `__lodfar` props (free-border, simplifyOpts==0). Don't re-pitch
+        // cranking target_error here for BSP; see notes/bsp-draw-load-and-lod-plan.md.
         size_t newCount = meshopt_simplify(
           simplified.data(), indices.data(), indices.size(),
           &vertices[0].pos.data[0], vertices.size(), sizeof(VertexNorm),
