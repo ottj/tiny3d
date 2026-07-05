@@ -298,6 +298,52 @@ T3DModel *t3d_model_load_alloc(const char *path, T3DModelAllocFn alloc, void *ct
   return model;
 }
 
+// Like t3d_model_load_alloc but decompresses IN PLACE (asset_loadf_into) instead
+// of streaming through asset_fopen, so NO decompression window is allocated. See
+// the header for the full contract. `bufsize` is the caller's known upper bound
+// on asset_buf_size(orig,cmp,margin) (>0 → skip the header pre-read); pass <=0 to
+// discover it. Returns NULL gracefully on a full pool or a missing file.
+// Return the on-disk byte size of an open file (asset_loadf_into needs it as the
+// input value of *sz — the size of the compressed asset), or -1 on error.
+static int t3d_file_size(FILE *f) {
+  if(fseek(f, 0, SEEK_END) != 0) return -1;
+  long n = ftell(f);
+  if(n < 0 || fseek(f, 0, SEEK_SET) != 0) return -1;
+  return (int)n;
+}
+
+T3DModel *t3d_model_load_alloc_inplace(const char *path, int bufsize, T3DModelAllocFn alloc, void *ctx) {
+  if(bufsize <= 0) {
+    // Discover the minimum in-place buffer size: a NULL destination makes
+    // asset_loadf_into read only the header and report the required size in
+    // `bufsize` (no decompression runs). Separate open so the real load below
+    // gets a clean file position (avoids mixing raw header reads with stdio).
+    FILE *hf = fopen(path, "rb");
+    if(hf == NULL) return NULL;
+    int hsz = t3d_file_size(hf);              // in: compressed size (asset_loadf_into contract)
+    if(hsz > 0) asset_loadf_into(hf, &hsz, NULL, &bufsize);
+    fclose(hf);
+    if(bufsize <= 0) return NULL;
+  }
+
+  FILE *f = fopen(path, "rb");
+  if(f == NULL) return NULL;
+  int sz = t3d_file_size(f);                  // in: compressed on-disk size
+  if(sz <= 0) { fclose(f); return NULL; }
+
+  // Allocate only after the file is open, so a fopen failure can't strand a
+  // block the caller's allocator has no generic way to reclaim here.
+  T3DModel *model = (T3DModel*)alloc((size_t)bufsize, ctx);
+  if(model == NULL) { fclose(f); return NULL; }
+
+  int cap = bufsize;
+  bool ok = asset_loadf_into(f, &sz, model, &cap);  // sz out: uncompressed size
+  fclose(f);
+  assertf(ok, "t3d_model_load_alloc_inplace: buffer too small for %s (%d < %d)", path, bufsize, cap);
+  t3d_model_patch(model, sz);  // sz = decompressed size; model occupies [0, sz)
+  return model;
+}
+
 void t3d_model_draw_custom(const T3DModel* model, T3DModelDrawConf conf)
 {
   T3DModelState state = t3d_model_state_create();

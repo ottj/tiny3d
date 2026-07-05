@@ -224,6 +224,30 @@ void t3d_model_patch(T3DModel *model, int size);
 T3DModel* t3d_model_load_alloc(const char *path, T3DModelAllocFn alloc, void *ctx);
 
 /**
+ * Like t3d_model_load_alloc, but decompresses the .t3dm IN PLACE (libdragon's
+ * asset_loadf_into) instead of STREAMING it through asset_fopen. The in-place
+ * decoder needs no sliding-window buffer — the window is an asset_fopen-only
+ * cost (see libdragon mkasset docs) — so this path allocates ZERO shared-heap
+ * transient and runs libdragon's ~50%-faster "full" decompressor that DMA-races
+ * the ROM read. Intended for sr64's churn/TLSF region, where asset_fopen's
+ * ~256 KB window was a fragmentation hazard (deferred loads → world holes).
+ *
+ * In-place decode keeps the still-compressed input in the TAIL of the block
+ * while writing the decompressed output to the front, so the destination must
+ * be asset_buf_size(orig, cmp, margin) bytes — slightly larger than the raw
+ * decompressed size. Supply that size via `bufsize` (e.g. a baked per-chunk
+ * decompressed size + a bounded margin) to skip the header pre-read entirely;
+ * pass bufsize <= 0 to have this function discover it (one extra header read,
+ * no decode). `bufsize`, when > 0, MUST be >= the real requirement or the load
+ * asserts (buffer too small); over-sizing is harmless.
+ *
+ * alloc(bufsize, ctx) supplies the block; returns NULL GRACEFULLY if alloc
+ * returns NULL (pool full → caller falls back to a coarser LOD) or the file is
+ * missing. Free like t3d_model_load_alloc: t3d_model_cleanup + your allocator.
+ */
+T3DModel* t3d_model_load_alloc_inplace(const char *path, int bufsize, T3DModelAllocFn alloc, void *ctx);
+
+/**
  * Free a model's GPU-side resources (rspq blocks, cached textures) WITHOUT
  * freeing the model blob. Pair with a custom allocator's free for blobs that
  * did not come from malloc. t3d_model_free = t3d_model_cleanup + free(model).
