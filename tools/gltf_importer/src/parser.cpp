@@ -470,7 +470,21 @@ T3DM::T3DMData T3DM::parseGLTF(const char *gltfPath, const T3DM::Config &config)
 
   // sort models by transparency mode (opaque -> cutout -> transparent)
   // within the same transparency mode, sort by material
-  std::sort(t3dm.models.begin(), t3dm.models.end(), [&t3dm](const T3DM::Model &a, const T3DM::Model &b) {
+  //
+  // sr64 2026-08-05: STABLE_sort, not sort. `model.name` is copied from the
+  // glTF NODE (see above), so every primitive of a multi-primitive mesh shares
+  // one name — the `a.name < b.name` tie-break below then compares EQUAL for
+  // them, and std::sort leaves the relative order of equal elements
+  // unspecified. It really does permute them: 49 of sr64's 336 models came out
+  // with their objects in an order the exporter never emitted (worst: warthog
+  // 24/39, pelican 17/25). Anything keyed on primitive order — sr64 binds a
+  // per-object material record that way — then lands on the wrong mesh. The
+  // elite's 408-tri legs were given its 12-tri inset-lights record and rendered
+  // through EMISSIVE_PLASMA with the torso texture.
+  //
+  // stable_sort preserves the emitted order for equal keys, which is what a
+  // consumer can actually rely on. Costs a temp buffer; this is a host tool.
+  std::stable_sort(t3dm.models.begin(), t3dm.models.end(), [&t3dm](const T3DM::Model &a, const T3DM::Model &b) {
     auto &matA = t3dm.materials[a.materialName];
     auto &matB = t3dm.materials[b.materialName];
     bool isTranspA = matA.blendMode == RDP::BLEND::MULTIPLY;
