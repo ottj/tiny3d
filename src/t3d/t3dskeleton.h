@@ -51,6 +51,36 @@ typedef struct {
  */
 T3DSkeleton t3d_skeleton_create_buffered(const T3DModel *model, int bufferCount);
 
+/// Allocator callbacks for t3d_skeleton_create_alloc. `alloc` returns a cached
+/// buffer, `alloc_uncached` an uncached (KSEG1) one for the RSP-read matrix
+/// stack; both may return NULL. `free_fn` accepts either kind.
+/// Added for sr64: its animation memory lives in an arena-backed TLSF pool, and
+/// the plain constructor's internal malloc/malloc_uncached cannot be redirected.
+/// Same shape as T3DModelAllocFn (t3dmodel.h), which exists for the same reason.
+typedef void* (*T3DSkelAllocFn)(size_t size, void *ctx);
+typedef void  (*T3DSkelFreeFn)(void *ptr, void *ctx);
+
+/**
+ * Like t3d_skeleton_create_buffered, but every allocation comes from the
+ * supplied callbacks instead of malloc/malloc_uncached.
+ *
+ * Unlike the plain constructor this NULL-CHECKS: on a failed allocation it
+ * releases whatever it took and returns a zeroed T3DSkeleton (`bones == NULL`),
+ * so a caller whose pool is full degrades instead of dereferencing NULL inside
+ * t3d_mat4_invert_affine. Check `bones` before use.
+ *
+ * Free with t3d_skeleton_destroy_free and the matching free callback — NEVER
+ * t3d_skeleton_destroy, which calls libc free() on pointers your allocator owns.
+ */
+T3DSkeleton t3d_skeleton_create_alloc(const T3DModel *model, int bufferCount,
+                                      T3DSkelAllocFn alloc,
+                                      T3DSkelAllocFn alloc_uncached,
+                                      T3DSkelFreeFn free_fn, void *ctx);
+
+/// Counterpart of t3d_skeleton_create_alloc. NULL-safe.
+void t3d_skeleton_destroy_free(T3DSkeleton *skeleton, T3DSkelFreeFn free_fn, void *ctx);
+
+
 /**
  * Creates a skeleton instance from a model's skeleton definition
  * @param model The model to create the skeleton from

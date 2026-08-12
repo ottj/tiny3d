@@ -227,7 +227,13 @@ inline static float t3d_quat_dot(const T3DQuat *a, const T3DQuat *b)
  */
 inline static void t3d_quat_normalize(T3DQuat *quat)
 {
-  float scale = 1.0f / sqrtf(quat->v[0]*quat->v[0] + quat->v[1]*quat->v[1] + quat->v[2]*quat->v[2] + quat->v[3]*quat->v[3]);
+  // A zero-length quaternion divides by zero and raises DIV0 on the VR4300,
+  // which is a hard crash rather than a NaN. Reachable from an animation whose
+  // keyframes never loaded (targets still calloc'd to all-zero); snap to
+  // identity instead of taking the ROM down.
+  float len2 = quat->v[0]*quat->v[0] + quat->v[1]*quat->v[1] + quat->v[2]*quat->v[2] + quat->v[3]*quat->v[3];
+  if(len2 <= 0.0f) { quat->v[0] = 0.0f; quat->v[1] = 0.0f; quat->v[2] = 0.0f; quat->v[3] = 1.0f; return; }
+  float scale = 1.0f / sqrtf(len2);
   quat->v[0] *= scale;
   quat->v[1] *= scale;
   quat->v[2] *= scale;

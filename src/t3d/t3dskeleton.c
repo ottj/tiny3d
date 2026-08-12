@@ -41,6 +41,69 @@ T3DSkeleton t3d_skeleton_create_buffered(const T3DModel *model, int bufferCount)
   return skel;
 }
 
+
+// --- allocator-hooked variants (sr64) --------------------------------------
+// Same construction as t3d_skeleton_create_buffered, with every allocation
+// routed through caller callbacks so the skeleton can live in a pool rather
+// than the shared heap. Kept beside the original deliberately: if one changes,
+// the diff makes it obvious the other must follow.
+
+T3DSkeleton t3d_skeleton_create_alloc(const T3DModel *model, int bufferCount,
+                                      T3DSkelAllocFn alloc,
+                                      T3DSkelAllocFn alloc_uncached,
+                                      T3DSkelFreeFn free_fn, void *ctx)
+{
+  const T3DChunkSkeleton *skelRef = t3d_model_get_skeleton(model);
+  if(skelRef == NULL || alloc == NULL || alloc_uncached == NULL) {
+    return (T3DSkeleton){0};
+  }
+
+  T3DSkeleton skel = (T3DSkeleton){
+    .bones = alloc(sizeof(T3DBone) * skelRef->boneCount, ctx),
+    .boneMatricesFP = alloc_uncached(sizeof(T3DMat4FP) * skelRef->boneCount * bufferCount, ctx),
+    .inverseBindPoses = alloc(sizeof(T3DMat4) * skelRef->boneCount, ctx),
+    .skeletonRef = skelRef,
+    .bufferCount = bufferCount,
+    .currentBufferIdx = 0,
+  };
+
+  // The plain constructor dereferences straight through here. This one checks,
+  // because a pool CAN legitimately be full and a NULL deref inside
+  // t3d_mat4_invert_affine is a very indirect way to learn that.
+  if(skel.bones == NULL || skel.boneMatricesFP == NULL || skel.inverseBindPoses == NULL) {
+    if(free_fn) {
+      if(skel.bones) free_fn(skel.bones, ctx);
+      if(skel.boneMatricesFP) free_fn(skel.boneMatricesFP, ctx);
+      if(skel.inverseBindPoses) free_fn(skel.inverseBindPoses, ctx);
+    }
+    return (T3DSkeleton){0};
+  }
+
+  t3d_skeleton_reset(&skel);
+
+  for(int i = 0; i < skelRef->boneCount; i++) {
+    T3DBone *bone = &skel.bones[i];
+    const T3DChunkBone *boneDef = &skelRef->bones[i];
+    T3DMat4 localMat;
+    t3d_mat4_from_srt(&localMat, bone->scale.v, bone->rotation.v, bone->position.v);
+    if(boneDef->parentIdx != 0xFFFF) {
+      t3d_mat4_mul(&bone->matrix, &skel.bones[boneDef->parentIdx].matrix, &localMat);
+    } else {
+      bone->matrix = localMat;
+    }
+    t3d_mat4_invert_affine(&skel.inverseBindPoses[i], &bone->matrix);
+  }
+
+  return skel;
+}
+
+void t3d_skeleton_destroy_free(T3DSkeleton *skeleton, T3DSkelFreeFn free_fn, void *ctx) {
+  if(skeleton == NULL || free_fn == NULL)return;
+  if(skeleton->bones) { free_fn(skeleton->bones, ctx); skeleton->bones = NULL; }
+  if(skeleton->boneMatricesFP) { free_fn(skeleton->boneMatricesFP, ctx); skeleton->boneMatricesFP = NULL; }
+  if(skeleton->inverseBindPoses) { free_fn(skeleton->inverseBindPoses, ctx); skeleton->inverseBindPoses = NULL; }
+}
+
 T3DSkeleton t3d_skeleton_clone(const T3DSkeleton *skel, bool useMatrices) {
   T3DSkeleton result = {
     .bones = malloc(sizeof(T3DBone) * skel->skeletonRef->boneCount),

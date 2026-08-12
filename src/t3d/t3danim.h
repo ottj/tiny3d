@@ -48,6 +48,22 @@ typedef struct {
   float time;
 
   FILE *file;
+  // sr64: optional MEMORY keyframe source. When dataPtr is non-NULL the
+  // reader takes keyframes from it at dataOffset instead of fread()ing from
+  // `file`, and rewind resets the offset rather than the stream.
+  //
+  // Why: the .sdata file position IS the playback cursor, so a per-FILE*
+  // design forces one open handle per playing instance. Every biped playing
+  // the same clip then holds its own newlib FILE buffer and DragonFS handle
+  // for the whole animation — on N64 that is both the largest per-actor cost
+  // and a load-time failure point when the heap is fragmented. The clips are
+  // tiny (a grunt's are 0.4-6 KB), so the caller can load one ONCE, share it
+  // across every instance, and keep only this 8-byte cursor per anim.
+  //
+  // The buffer is BORROWED: t3d_anim_destroy* never frees it.
+  const uint8_t *dataPtr;
+  uint32_t dataOffset;
+  uint32_t dataSize;
   int nextKfSize;
   uint8_t isPlaying;
   uint8_t isLooping;
@@ -67,6 +83,31 @@ T3DAnim t3d_anim_create(const T3DModel *model, const char* name);
  * @param skeleton The skeleton to attach the animation to
  */
 void t3d_anim_attach(T3DAnim* anim, const T3DSkeleton* skeleton);
+
+/**
+ * Like t3d_anim_attach, but the channel-target block comes from `alloc`
+ * instead of calloc. Returns false (leaving targetsQuat NULL) if it refuses.
+ * Added for sr64's arena-backed animation pool; see t3dskeleton.h.
+ *
+ * Pair with t3d_anim_destroy_free, NOT t3d_anim_destroy — the latter free()s
+ * the target block, which your allocator owns.
+ */
+bool t3d_anim_attach_alloc(T3DAnim* anim, const T3DSkeleton* skeleton,
+                           void* (*alloc)(size_t size, void *ctx),
+                           void (*free_fn)(void *ptr, void *ctx), void *ctx);
+
+/// Counterpart of t3d_anim_attach_alloc: releases the target block through
+/// `free_fn` and closes the keyframe stream. NULL-safe.
+/**
+ * Point an animation at an in-memory keyframe buffer instead of a file.
+ * `data` is BORROWED — the caller keeps ownership and must outlive the anim.
+ * Pass NULL to return to file-backed reading. Resets the cursor.
+ */
+void t3d_anim_set_source_memory(T3DAnim *anim, const void *data, uint32_t size);
+
+void t3d_anim_destroy_free(T3DAnim *anim,
+                           void (*free_fn)(void *ptr, void *ctx), void *ctx);
+
 
 /**
  * Attaches a single position target to a single channel target.

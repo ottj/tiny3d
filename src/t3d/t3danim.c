@@ -4,6 +4,7 @@
 */
 
 #include "t3d/t3danim.h"
+#include <string.h>
 #include <malloc.h>
 
 #define SQRT_2_INV 0.70710678118f
@@ -42,18 +43,21 @@ static void rewind_anim(T3DAnim *anim)
     anim->targetsQuat[c].base.timeEnd = 0;
   }
   anim->nextKfSize = sizeof(T3DAnimKF);
-  rewind(anim->file);
+  if(anim->dataPtr) anim->dataOffset = 0;   // memory source: cursor is the offset
+  else if(anim->file) rewind(anim->file);
 }
 
-void t3d_anim_attach(T3DAnim *anim, const T3DSkeleton *skeleton) {
-  if(anim->targetsQuat)free(anim->targetsQuat);
+void t3d_anim_set_source_memory(T3DAnim *anim, const void *data, uint32_t size) {
+  if(anim == NULL)return;
+  anim->dataPtr = (const uint8_t*)data;
+  anim->dataOffset = 0;
+  anim->dataSize = size;
+}
 
-  size_t allocQuat = sizeof(T3DAnimTargetQuat) * anim->animRef->channelsQuat;
-  size_t allocScalar = sizeof(T3DAnimTargetScalar) * anim->animRef->channelsScalar;
-  anim->targetsQuat = calloc(allocQuat + allocScalar, 1); // only allocate a single block
-  anim->targetsScalar = (T3DAnimTargetScalar*)((uint8_t*)anim->targetsQuat + allocQuat);
-  rewind_anim(anim);
-
+// Wire each channel's target pointer at the matching bone field. Factored out
+// of t3d_anim_attach so the allocator-hooked variant shares one body — a second
+// copy of this loop would be a silent divergence waiting to happen.
+static void attach_targets(T3DAnim *anim, const T3DSkeleton *skeleton) {
   uint32_t channelCount = anim->animRef->channelsScalar + anim->animRef->channelsQuat;
 
   uint32_t idxQuat = 0;
@@ -79,6 +83,17 @@ void t3d_anim_attach(T3DAnim *anim, const T3DSkeleton *skeleton) {
       default: {assertf(false, "Unknown animation target %d", channelMap->targetType);}
     }
   }
+}
+
+void t3d_anim_attach(T3DAnim *anim, const T3DSkeleton *skeleton) {
+  if(anim->targetsQuat)free(anim->targetsQuat);
+
+  size_t allocQuat = sizeof(T3DAnimTargetQuat) * anim->animRef->channelsQuat;
+  size_t allocScalar = sizeof(T3DAnimTargetScalar) * anim->animRef->channelsScalar;
+  anim->targetsQuat = calloc(allocQuat + allocScalar, 1); // only allocate a single block
+  anim->targetsScalar = (T3DAnimTargetScalar*)((uint8_t*)anim->targetsQuat + allocQuat);
+  rewind_anim(anim);
+  attach_targets(anim, skeleton);
 }
 
 inline static void attach_scalar(T3DAnim* anim, uint32_t targetIdx, T3DVec3* target, int32_t *updateFlag, uint8_t targetType) {
@@ -138,8 +153,23 @@ static inline T3DAnimTargetBase* get_base_target(T3DAnim *anim, uint64_t channel
 
 static inline bool load_keyframe(T3DAnim *anim) {
   T3DAnimKF kf;
-  size_t readBytes = fread(&kf, anim->nextKfSize, 1, anim->file);
-  if(readBytes == 0)return false;
+  if(anim->dataPtr) {
+    // Memory source. Same bytes the file path would have read; running off the
+    // end is the normal end-of-animation signal, exactly as fread returning 0.
+    if(anim->dataOffset + (uint32_t)anim->nextKfSize > anim->dataSize)return false;
+    memcpy(&kf, anim->dataPtr + anim->dataOffset, anim->nextKfSize);
+    anim->dataOffset += (uint32_t)anim->nextKfSize;
+  } else {
+    // No source at all: neither a memory buffer nor an open stream. Treat it
+    // as "no more keyframes" rather than dereferencing NULL inside fread.
+    // This is reachable when t3d_anim_create's asset_fopen fails (a missing or
+    // unreadable keyframe file, or an out-of-memory open on a fragmented
+    // heap), and the honest outcome is a static pose, not a crash — the
+    // caller already handles an animation that yields nothing.
+    if(anim->file == NULL)return false;
+    size_t readBytes = fread(&kf, anim->nextKfSize, 1, anim->file);
+    if(readBytes == 0)return false;
+  }
 
   bool isLarge = kf.nextTime & 0x8000;
   anim->nextKfSize = isLarge ? sizeof(T3DAnimKF) : (sizeof(T3DAnimKF)-2);
@@ -193,7 +223,37 @@ void t3d_anim_update(T3DAnim *anim, float deltaTime) {
       if(!load_keyframe(anim))break;
     }
 
+    // timeDiff is ZERO when this channel loaded no keyframes at all — the
+    // window never opened, so timeStart == timeEnd == 0. That happens for an
+    // animation with no usable source (a failed asset_fopen, an empty or
+    // truncated keyframe file), and dividing by it raises a DIV0 FPU exception
+    // and takes the ROM down.
+    //
+    // The existing `if(kf.nextTime == 0) timeStart -= 0.00001f` above covers
+    // ZERO-DURATION keyframes, which is a different case: there at least one
+    // keyframe was read. This covers "none were".
+    //
+    // Holding interp at 0 pins the channel to kfCurr, i.e. a static pose —
+    // the same outcome as an animation that has finished, and what every
+    // caller already copes with.
+    // SKIP the channel outright when its window never opened
+    // (timeStart == timeEnd == 0, i.e. load_keyframe returned false before any
+    // keyframe was read — an animation with no usable source). Two divides lie
+    // below and BOTH blow up in that state:
+    //   1. interp = (time - timeStart) / timeDiff        -> DIV0
+    //   2. t3d_quat_nlerp -> t3d_quat_normalize divides by the quaternion
+    //      length, and kfCurr/kfNext are still the calloc'd (0,0,0,0), so the
+    //      length is 0 -> DIV0 one line later.
+    // Guarding only the first moves the crash rather than fixing it; skipping
+    // leaves the bone at its bind value, which is the static pose we want.
+    //
+    // NB the existing `if(kf.nextTime == 0) timeStart -= 0.00001f` above covers
+    // ZERO-DURATION keyframes — a different case, where a keyframe WAS read.
     float timeDiff = target->timeEnd - target->timeStart;
+    if(timeDiff <= 0.0f) {
+      *target->changedFlag = updateFlag;
+      continue;
+    }
     float interp = (anim->time - target->timeStart) / timeDiff;
     *target->changedFlag = updateFlag;
 
@@ -220,4 +280,38 @@ void t3d_anim_set_time(T3DAnim *anim, float time) {
   if(time > anim->animRef->duration)time = anim->animRef->duration;
   if(time < anim->time)rewind_anim(anim);
   anim->time = time;
+}
+
+// --- allocator-hooked variants (sr64) --------------------------------------
+// See t3danim.h. The channel-target block is the only allocation t3d_anim_attach
+// makes, so routing it is enough to keep an animation entirely out of the
+// shared heap.
+
+bool t3d_anim_attach_alloc(T3DAnim *anim, const T3DSkeleton *skeleton,
+                           void* (*alloc)(size_t size, void *ctx),
+                           void (*free_fn)(void *ptr, void *ctx), void *ctx)
+{
+  if(anim == NULL || skeleton == NULL || alloc == NULL)return false;
+  if(anim->targetsQuat && free_fn)free_fn(anim->targetsQuat, ctx);
+
+  size_t allocQuat = sizeof(T3DAnimTargetQuat) * anim->animRef->channelsQuat;
+  size_t allocScalar = sizeof(T3DAnimTargetScalar) * anim->animRef->channelsScalar;
+  anim->targetsQuat = alloc(allocQuat + allocScalar, ctx);
+  if(anim->targetsQuat == NULL)return false;
+  memset(anim->targetsQuat, 0, allocQuat + allocScalar);
+  anim->targetsScalar = (T3DAnimTargetScalar*)((uint8_t*)anim->targetsQuat + allocQuat);
+
+  rewind_anim(anim);
+  attach_targets(anim, skeleton);
+  return true;
+}
+
+void t3d_anim_destroy_free(T3DAnim *anim,
+                           void (*free_fn)(void *ptr, void *ctx), void *ctx)
+{
+  if(anim == NULL)return;
+  if(anim->targetsQuat && free_fn)free_fn(anim->targetsQuat, ctx);
+  anim->targetsQuat = NULL;
+  anim->targetsScalar = NULL;
+  if(anim->file){ fclose(anim->file); anim->file = NULL; }
 }
