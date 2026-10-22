@@ -28,8 +28,8 @@ typedef struct {
 typedef struct {
   T3DAnimTargetBase base;
   T3DQuat* targetQuat; // target to modify
-  T3DQuat kfCurr; // current keyframe value
-  T3DQuat kfNext; // next keyframe value
+  T3DQuat kfCurr __attribute__((aligned(8))); // current keyframe value (aligned for 64-bit copies)
+  T3DQuat kfNext __attribute__((aligned(8))); // next keyframe value
 } T3DAnimTargetQuat;
 
 typedef struct {
@@ -39,6 +39,8 @@ typedef struct {
   float kfNext;
 } T3DAnimTargetScalar;
 
+#define T3D_ANIM_DEFAULT_BUFFER_SIZE 512 // default keyframe stream buffer size, split into two halves
+
 typedef struct {
   T3DChunkAnim *animRef;
   T3DAnimTargetQuat *targetsQuat;
@@ -47,35 +49,49 @@ typedef struct {
   float speed;
   float time;
 
-  FILE *file;
-  // sr64: optional MEMORY keyframe source. When dataPtr is non-NULL the
-  // reader takes keyframes from it at dataOffset instead of fread()ing from
-  // `file`, and rewind resets the offset rather than the stream.
-  //
-  // Why: the .sdata file position IS the playback cursor, so a per-FILE*
-  // design forces one open handle per playing instance. Every biped playing
-  // the same clip then holds its own newlib FILE buffer and DragonFS handle
-  // for the whole animation — on N64 that is both the largest per-actor cost
-  // and a load-time failure point when the heap is fragmented. The clips are
-  // tiny (a grunt's are 0.4-6 KB), so the caller can load one ONCE, share it
-  // across every instance, and keep only this 8-byte cursor per anim.
-  //
-  // The buffer is BORROWED: t3d_anim_destroy* never frees it.
-  const uint8_t *dataPtr;
-  uint32_t dataOffset;
-  uint32_t dataSize;
-  int nextKfSize;
+  // keyframe stream, DMA'd from ROM
+  uint8_t *buffer;
+  uint64_t dmaTicket; // last queued DMA, always targets the half not being read, 0 if none
+  pi_addr_t romAddr;
+  uint32_t streamSize;
+  uint32_t loadOffset; // file offset of the next DMA
+  uint32_t streamPos; // bytes read since the last rewind
+  uint16_t readPos; // read position in 'buffer' (both halves)
+  uint16_t bufferHalfSize;
+
+  uint8_t nextKfSize;
+  // sr64: 1 when tiny3d allocated 'buffer' (t3d_anim_create_buffered) and its
+  // destroy frees it; 0 when the caller supplied it (t3d_anim_set_source_rom).
+  uint8_t ownsBuffer;
   uint8_t isPlaying;
   uint8_t isLooping;
 } T3DAnim;
 
 /**
- * Creates an animation instance from a model's animation definition
+ * Creates an animation instance from a model's animation definition.
+ * Keyframes are streamed from ROM via DMA into a buffer of the given size.
+ * The buffer is split in two halves, while one is read the other one gets loaded in the background.
+ * Free it with 't3d_anim_destroy'.
+ *
+ * @param model The model to create the animation from
+ * @param name The name of the animation to create
+ * @param bufferSize size of the stream buffer in bytes, must be a multiple of 32
+ * @return The created animation
+ */
+T3DAnim t3d_anim_create_buffered(const T3DModel *model, const char* name, uint32_t bufferSize);
+
+/**
+ * Creates an animation instance from a model's animation definition,
+ * using the default stream buffer size ('T3D_ANIM_DEFAULT_BUFFER_SIZE').
+ * Free it with 't3d_anim_destroy'.
+ *
  * @param model The model to create the animation from
  * @param name The name of the animation to create
  * @return The created animation
  */
-T3DAnim t3d_anim_create(const T3DModel *model, const char* name);
+static inline T3DAnim t3d_anim_create(const T3DModel *model, const char* name) {
+  return t3d_anim_create_buffered(model, name, T3D_ANIM_DEFAULT_BUFFER_SIZE);
+}
 
 /**
  * Attaches an animation to a skeleton.
@@ -96,15 +112,23 @@ bool t3d_anim_attach_alloc(T3DAnim* anim, const T3DSkeleton* skeleton,
                            void* (*alloc)(size_t size, void *ctx),
                            void (*free_fn)(void *ptr, void *ctx), void *ctx);
 
-/// Counterpart of t3d_anim_attach_alloc: releases the target block through
-/// `free_fn` and closes the keyframe stream. NULL-safe.
 /**
- * Point an animation at an in-memory keyframe buffer instead of a file.
- * `data` is BORROWED — the caller keeps ownership and must outlive the anim.
- * Pass NULL to return to file-backed reading. Resets the cursor.
+ * Stream an animation's keyframes from `romAddr` (`size` bytes, both 2-byte
+ * aligned — e.g. dfs_rom_addr / dfs_rom_size of an uncompressed DFS file)
+ * through a buffer the CALLER supplies, instead of one t3d_anim_create
+ * allocates. For an animation built by hand around its own T3DChunkAnim.
+ * `buffer`: 16-byte aligned, `bufferSize` a multiple of 32 (as
+ * t3d_anim_create_buffered). Borrowed: no destroy frees it, and it must
+ * outlive the stream. Blocks until the first half is loaded, like create.
  */
-void t3d_anim_set_source_memory(T3DAnim *anim, const void *data, uint32_t size);
+void t3d_anim_set_source_rom(T3DAnim *anim, pi_addr_t romAddr, uint32_t size,
+                             uint8_t *buffer, uint32_t bufferSize);
 
+/**
+ * Counterpart of t3d_anim_attach_alloc: waits for the stream's DMA, releases
+ * the target block through `free_fn` (NULL keeps it — it is then the
+ * caller's), frees a buffer t3d_anim_create allocated. NULL-safe.
+ */
 void t3d_anim_destroy_free(T3DAnim *anim,
                            void (*free_fn)(void *ptr, void *ctx), void *ctx);
 
@@ -151,7 +175,7 @@ void t3d_anim_update(T3DAnim* anim, float deltaTime);
 
 /**
  * Sets the animation to a specific time.
- * Note: this may cause some work internally due to potential DMAs.
+ * Note: going back in time needs a rewind, which may cause a blocking DMA.
  * @param anim animation to set time for
  * @param time time in seconds
  */

@@ -19,12 +19,14 @@ extern "C"
  * if 'hasChanged' is set to true.
  */
 typedef struct {
-  T3DMat4 matrix;
+  T3DMat4x3 matrix;
   T3DVec3 scale;
   T3DQuat rotation;
   T3DVec3 position;
   int32_t hasChanged;
-} T3DBone;
+  uint16_t parentIdx; // copy of the model's bone definition, avoids touching it in 't3d_skeleton_update'
+  uint16_t depth;
+} __attribute__((aligned(16))) T3DBone;
 
 /**
  * Skeleton instance, can be constructed from a model's skeleton definition.
@@ -33,7 +35,7 @@ typedef struct {
 typedef struct {
   T3DBone* bones;
   T3DMat4FP* boneMatricesFP; // fixed point matrix, used for rendering — SKIN matrix (current * IBM)
-  T3DMat4* inverseBindPoses; // one per bone, computed once at create from the bind SRT chain
+  T3DMat4x3* inverseBindPoses; // one per bone, computed once at create from the bind SRT chain (affine: 4x3)
   uint8_t bufferCount; // number of matrices buffers
   uint8_t currentBufferIdx;
   const T3DChunkSkeleton* skeletonRef; // reference to the model, defines skeleton structure
